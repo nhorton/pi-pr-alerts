@@ -2,7 +2,7 @@
  * PR Alerts Extension
  *
  * Forked from pi-pr-status. Shows PR status in the pi footer and sends agent
- * alerts when CI fails or new PR comments/review comments are added.
+ * alerts when CI fails, new PR comments/review comments are added, or the PR merges.
  *
  * The extension still refreshes compact PR metadata periodically, but it avoids
  * brute-force CI polling by watching in-progress GitHub Actions runs with
@@ -338,6 +338,7 @@ export default function (pi: ExtensionAPI) {
 	let lastPrUpdatedAt: string | undefined;
 	let initialCommentBaseline = true;
 	let lastFailureSignature: string | undefined;
+	let lastMergeSignature: string | undefined;
 	let watchedRunIds = new Set<number>();
 	let runWatchers = new Map<number, ChildProcessWithoutNullStreams>();
 
@@ -370,6 +371,7 @@ export default function (pi: ExtensionAPI) {
 		lastPrUpdatedAt = undefined;
 		initialCommentBaseline = true;
 		lastFailureSignature = undefined;
+		lastMergeSignature = undefined;
 		for (const watcher of runWatchers.values()) watcher.kill();
 		runWatchers = new Map();
 		watchedRunIds = new Set();
@@ -390,6 +392,7 @@ export default function (pi: ExtensionAPI) {
 		lastPr = pr ?? undefined;
 		ui.setStatus(STATUS_KEY, lastPr ? formatStatus(lastPr, cwd ? getUncommittedChangeCount(cwd) : 0) : undefined);
 		maybeAlertForFailedChecks(previous, lastPr);
+		maybeAlertForMerge(previous, lastPr);
 	}
 
 	function maybeAlertForFailedChecks(previous: PrInfo | undefined, current: PrInfo | undefined) {
@@ -403,6 +406,20 @@ export default function (pi: ExtensionAPI) {
 				url: current.url,
 				pr: current.number,
 				checks: current.checks,
+			});
+		}
+	}
+
+	function maybeAlertForMerge(previous: PrInfo | undefined, current: PrInfo | undefined) {
+		if (!current || current.state !== "MERGED") return;
+		const signature = current.url;
+		if (signature === lastMergeSignature) return;
+		if (previous?.url === current.url && previous.state !== "MERGED") {
+			lastMergeSignature = signature;
+			sendAlert(`PR #${current.number} just merged. You may want to switch to the upstream branch and update your code.`, {
+				kind: "merge",
+				url: current.url,
+				pr: current.number,
 			});
 		}
 	}
@@ -450,6 +467,11 @@ export default function (pi: ExtensionAPI) {
 				pinnedPr = null;
 				showStatus(pr, ui, cwd);
 				maybeStartRunWatchers(cwd);
+				return;
+			}
+			if (pr?.state === "MERGED") {
+				pinnedPr = null;
+				showStatus(pr, ui, cwd);
 				return;
 			}
 		}

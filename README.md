@@ -5,6 +5,7 @@ A [Pi](https://github.com/earendil-works/pi) extension forked from [`pi-pr-statu
 - a GitHub Actions run for the current PR fails
 - status checks transition into a failed state
 - a new issue comment, review, or review comment is added to the PR
+- the PR merges
 
 ## What it shows
 
@@ -27,6 +28,7 @@ Unlike the original extension, `pi-pr-alerts` also injects a visible custom mess
 ```text
 [PR alert] CI failed on PR #42: 2/5 checks failed.
 [PR alert] New PR comment on #42 from octocat: Could you update this test?
+[PR alert] PR #42 just merged. You may want to switch to the upstream branch and update your code.
 ```
 
 The alert message is sent with `pi.sendMessage(..., { triggerTurn: true, deliverAs: "steer" })`, so an idle agent can react immediately and a busy agent receives the alert as steering context.
