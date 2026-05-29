@@ -30,6 +30,7 @@ interface PrInfo {
 	repoName: string;
 	checks: CheckStatus;
 	unresolvedThreads: number;
+	hasMergeConflict: boolean;
 }
 
 interface RepoInfo {
@@ -120,6 +121,10 @@ function repoNameFromPrUrl(url: string): string {
 	return match?.[1]?.split("/")[1] ?? "repo";
 }
 
+function hasMergeConflict(pr: Record<string, unknown>): boolean {
+	return pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY";
+}
+
 function parseChecks(statusCheckRollup: unknown[]): CheckStatus {
 	const checks: CheckStatus = { total: 0, pass: 0, fail: 0, pending: 0 };
 	for (const check of statusCheckRollup) {
@@ -179,7 +184,7 @@ function getUnresolvedThreads(repo: RepoInfo, prNumber: number, cwd?: string): n
 }
 
 function getPrByNumber(repo: string, prNumber: number): PrInfo | undefined {
-	const json = runGh(["pr", "view", String(prNumber), "--repo", repo, "--json", "number,title,url,state,statusCheckRollup"]);
+	const json = runGh(["pr", "view", String(prNumber), "--repo", repo, "--json", "number,title,url,state,statusCheckRollup,mergeable,mergeStateStatus"]);
 	if (!json) return undefined;
 	try {
 		const pr = JSON.parse(json);
@@ -194,6 +199,7 @@ function getPrByNumber(repo: string, prNumber: number): PrInfo | undefined {
 			repoName: name ?? repoNameFromPrUrl(pr.url),
 			checks,
 			unresolvedThreads: owner && name ? getUnresolvedThreads({ owner, name }, pr.number) : 0,
+			hasMergeConflict: hasMergeConflict(pr),
 		};
 	} catch {
 		return undefined;
@@ -201,7 +207,7 @@ function getPrByNumber(repo: string, prNumber: number): PrInfo | undefined {
 }
 
 function getPrForBranch(cwd: string, repo?: RepoInfo): PrInfo | undefined {
-	const json = runGh(["pr", "view", "--json", "number,title,url,state,statusCheckRollup"], cwd);
+	const json = runGh(["pr", "view", "--json", "number,title,url,state,statusCheckRollup,mergeable,mergeStateStatus"], cwd);
 	if (!json) return undefined;
 	try {
 		const pr = JSON.parse(json);
@@ -215,6 +221,7 @@ function getPrForBranch(cwd: string, repo?: RepoInfo): PrInfo | undefined {
 			repoName: repo?.name ?? repoNameFromPrUrl(pr.url),
 			checks,
 			unresolvedThreads: repo ? getUnresolvedThreads(repo, pr.number, cwd) : 0,
+			hasMergeConflict: hasMergeConflict(pr),
 		};
 	} catch {
 		return undefined;
@@ -309,6 +316,10 @@ function formatStatus(pr: PrInfo, uncommittedChanges = 0): string {
 		parts.push(`💬 ${pr.unresolvedThreads} unresolved`);
 	}
 
+	if (pr.hasMergeConflict) {
+		parts.push("⚠️ merge conflict");
+	}
+
 	if (uncommittedChanges > 0) {
 		parts.push(`✍️ ${uncommittedChanges} uncommitted ${uncommittedChanges === 1 ? "change" : "changes"}`);
 	}
@@ -339,6 +350,7 @@ export default function (pi: ExtensionAPI) {
 	let initialCommentBaseline = true;
 	let lastFailureSignature: string | undefined;
 	let lastMergeSignature: string | undefined;
+	let lastConflictSignature: string | undefined;
 	let watchedRunIds = new Set<number>();
 	let runWatchers = new Map<number, ChildProcessWithoutNullStreams>();
 
@@ -372,6 +384,7 @@ export default function (pi: ExtensionAPI) {
 		initialCommentBaseline = true;
 		lastFailureSignature = undefined;
 		lastMergeSignature = undefined;
+		lastConflictSignature = undefined;
 		for (const watcher of runWatchers.values()) watcher.kill();
 		runWatchers = new Map();
 		watchedRunIds = new Set();
@@ -393,6 +406,7 @@ export default function (pi: ExtensionAPI) {
 		ui.setStatus(STATUS_KEY, lastPr ? formatStatus(lastPr, cwd ? getUncommittedChangeCount(cwd) : 0) : undefined);
 		maybeAlertForFailedChecks(previous, lastPr);
 		maybeAlertForMerge(previous, lastPr);
+		maybeAlertForMergeConflict(previous, lastPr);
 	}
 
 	function maybeAlertForFailedChecks(previous: PrInfo | undefined, current: PrInfo | undefined) {
@@ -418,6 +432,24 @@ export default function (pi: ExtensionAPI) {
 			lastMergeSignature = signature;
 			sendAlert(`PR #${current.number} just merged. You may want to switch to the upstream branch and update your code.`, {
 				kind: "merge",
+				url: current.url,
+				pr: current.number,
+			});
+		}
+	}
+
+	function maybeAlertForMergeConflict(previous: PrInfo | undefined, current: PrInfo | undefined) {
+		if (!current) return;
+		if (current.state !== "OPEN" || !current.hasMergeConflict) {
+			if (!previous || previous.url === current.url) lastConflictSignature = undefined;
+			return;
+		}
+		const signature = current.url;
+		if (signature === lastConflictSignature) return;
+		if (!previous || previous.url !== current.url || !previous.hasMergeConflict) {
+			lastConflictSignature = signature;
+			sendAlert(`PR #${current.number} has a merge conflict with the base branch.`, {
+				kind: "merge-conflict",
 				url: current.url,
 				pr: current.number,
 			});
