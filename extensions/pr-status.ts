@@ -12,7 +12,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { hyperlink, Text } from "@earendil-works/pi-tui";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 interface CheckStatus {
@@ -27,6 +27,7 @@ interface PrInfo {
 	title: string;
 	url: string;
 	state: string;
+	repoName: string;
 	checks: CheckStatus;
 	unresolvedThreads: number;
 }
@@ -85,6 +86,20 @@ function getBranch(cwd: string): string | undefined {
 	}
 }
 
+function getUncommittedChangeCount(cwd: string): number {
+	try {
+		const status = execFileSync("git", ["status", "--porcelain"], {
+			cwd,
+			encoding: "utf-8",
+			timeout: 3000,
+			stdio: ["pipe", "pipe", "pipe"],
+		}).trim();
+		return status ? status.split("\n").length : 0;
+	} catch {
+		return 0;
+	}
+}
+
 function getRepoInfo(cwd: string): RepoInfo | undefined {
 	const json = runGh(["repo", "view", "--json", "owner,name"], cwd, 5000);
 	if (!json) return undefined;
@@ -98,6 +113,11 @@ function getRepoInfo(cwd: string): RepoInfo | undefined {
 
 function repoSlug(repo: RepoInfo): string {
 	return `${repo.owner}/${repo.name}`;
+}
+
+function repoNameFromPrUrl(url: string): string {
+	const match = url.match(PR_URL_RE);
+	return match?.[1]?.split("/")[1] ?? "repo";
 }
 
 function parseChecks(statusCheckRollup: unknown[]): CheckStatus {
@@ -171,6 +191,7 @@ function getPrByNumber(repo: string, prNumber: number): PrInfo | undefined {
 			title: pr.title,
 			url: pr.url,
 			state: pr.state,
+			repoName: name ?? repoNameFromPrUrl(pr.url),
 			checks,
 			unresolvedThreads: owner && name ? getUnresolvedThreads({ owner, name }, pr.number) : 0,
 		};
@@ -191,6 +212,7 @@ function getPrForBranch(cwd: string, repo?: RepoInfo): PrInfo | undefined {
 			title: pr.title,
 			url: pr.url,
 			state: pr.state,
+			repoName: repo?.name ?? repoNameFromPrUrl(pr.url),
 			checks,
 			unresolvedThreads: repo ? getUnresolvedThreads(repo, pr.number, cwd) : 0,
 		};
@@ -268,9 +290,10 @@ function getLatestRuns(repo: RepoInfo, branch: string, cwd?: string): RunInfo[] 
 	}
 }
 
-function formatStatus(pr: PrInfo): string {
+function formatStatus(pr: PrInfo, uncommittedChanges = 0): string {
 	const stateIcon = pr.state === "MERGED" ? "🟣" : pr.state === "CLOSED" ? "🔴" : "🟢";
-	const parts: string[] = [`${stateIcon} PR #${pr.number}`];
+	const prLabel = `${pr.repoName} PR - ${pr.title}`;
+	const parts: string[] = [`${stateIcon} ${hyperlink(prLabel, pr.url)}`];
 
 	if (pr.checks.total > 0) {
 		if (pr.checks.fail > 0) {
@@ -286,7 +309,10 @@ function formatStatus(pr: PrInfo): string {
 		parts.push(`💬 ${pr.unresolvedThreads} unresolved`);
 	}
 
-	parts.push(pr.url);
+	if (uncommittedChanges > 0) {
+		parts.push(`✍️ ${uncommittedChanges} uncommitted ${uncommittedChanges === 1 ? "change" : "changes"}`);
+	}
+
 	return parts.join(" · ");
 }
 
@@ -359,10 +385,10 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	}
 
-	function showStatus(pr: PrInfo | undefined, ui: { setStatus: (key: string, value: string | undefined) => void }) {
+	function showStatus(pr: PrInfo | undefined, ui: { setStatus: (key: string, value: string | undefined) => void }, cwd?: string) {
 		const previous = lastPr;
 		lastPr = pr ?? undefined;
-		ui.setStatus(STATUS_KEY, lastPr ? formatStatus(lastPr) : undefined);
+		ui.setStatus(STATUS_KEY, lastPr ? formatStatus(lastPr, cwd ? getUncommittedChangeCount(cwd) : 0) : undefined);
 		maybeAlertForFailedChecks(previous, lastPr);
 	}
 
@@ -410,26 +436,31 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function update(cwd: string, ui: { setStatus: (key: string, value: string | undefined) => void }) {
-		if (pinnedPr) {
-			const pr = getPrByNumber(pinnedPr.repo, pinnedPr.number);
-			showStatus(pr, ui);
-			return;
-		}
-
 		const branch = getBranch(cwd);
 		if (branch !== lastBranch) {
 			lastBranch = branch;
 			lastPr = undefined;
 			resetAlertState();
 		}
-		if (!branch || branch === "HEAD") {
-			showStatus(undefined, ui);
+
+		if (branch && branch !== "HEAD") {
+			if (!cachedRepo) cachedRepo = getRepoInfo(cwd);
+			const pr = getPrForBranch(cwd, cachedRepo);
+			if (pr?.state === "OPEN") {
+				pinnedPr = null;
+				showStatus(pr, ui, cwd);
+				maybeStartRunWatchers(cwd);
+				return;
+			}
+		}
+
+		if (pinnedPr) {
+			const pr = getPrByNumber(pinnedPr.repo, pinnedPr.number);
+			showStatus(pr, ui, cwd);
 			return;
 		}
-		if (!cachedRepo) cachedRepo = getRepoInfo(cwd);
-		const pr = getPrForBranch(cwd, cachedRepo);
-		showStatus(pr, ui);
-		maybeStartRunWatchers(cwd);
+
+		showStatus(undefined, ui, cwd);
 	}
 
 	function checkComments(cwd?: string) {
@@ -466,7 +497,7 @@ export default function (pi: ExtensionAPI) {
 		pinnedPr = { repo: parsed.repo, number: parsed.number };
 		latestCtx = ctx;
 		resetAlertState();
-		showStatus(getPrByNumber(parsed.repo, parsed.number), ctx.ui);
+		showStatus(getPrByNumber(parsed.repo, parsed.number), ctx.ui, ctx.cwd);
 		checkComments();
 	}
 

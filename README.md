@@ -11,13 +11,13 @@ A [Pi](https://github.com/earendil-works/pi) extension forked from [`pi-pr-statu
 When your current git branch has an open pull request, the footer displays:
 
 ```text
-🟢 PR #42 · ✅ 5 checks passed · https://github.com/owner/repo/pull/42
+🟢 repo PR - Add useful feature · ✅ 5 checks passed · ✍️ 2 uncommitted changes
 ```
 
 If CI fails or comments are unresolved, it mirrors the original `pi-pr-status` footer format:
 
 ```text
-🟢 PR #42 · ❌ 2/5 checks failed · 💬 3 unresolved · https://github.com/owner/repo/pull/42
+🟢 repo PR - Add useful feature · ❌ 2/5 checks failed · 💬 3 unresolved · ✍️ 2 uncommitted changes
 ```
 
 ## Agent alerts
