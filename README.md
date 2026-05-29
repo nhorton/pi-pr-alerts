@@ -1,11 +1,16 @@
 # pi-pr-alerts
 
-A [Pi](https://github.com/earendil-works/pi) extension forked from [`pi-pr-status`](https://www.npmjs.com/package/pi-pr-status). It keeps the original footer PR status display and adds agent alerts when:
+A [Pi](https://github.com/earendil-works/pi) extension forked from [`pi-pr-status`](https://www.npmjs.com/package/pi-pr-status). It keeps the original footer PR status display and adds agent-facing alerts for important PR activity.
 
-- a GitHub Actions run for the current PR fails
-- status checks transition into a failed state
-- a new issue comment, review, or review comment is added to the PR
-- the PR merges
+## What this fork adds
+
+Compared with the original `pi-pr-status`, this fork adds:
+
+- **Agent alerts, not just footer status.** Important PR events are injected into the Pi session with `pi.sendMessage(..., { triggerTurn: true, deliverAs: "steer" })`, so the agent can react instead of requiring the user to notice the footer.
+- **CI failure alerts.** The agent is notified when a GitHub Actions run fails or when status checks transition into a failed state.
+- **PR comment alerts.** The agent is notified when a new issue comment, review, or review comment is added to the PR.
+- **PR merged alerts.** The agent is notified when the PR merges, with guidance to switch back to the upstream branch and update the checkout.
+- **More efficient monitoring.** In-progress GitHub Actions runs are watched with `gh run watch` when possible, while comments are checked with small GraphQL probes instead of repeatedly fetching full PR details.
 
 ## What it shows
 
