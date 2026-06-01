@@ -532,14 +532,17 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		for (const item of incoming.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
-			sendAlert(`New PR comment on #${current.pr.number} from ${item.author}: ${truncateBody(item.body) || "(no body)"}`, {
-				kind: "comment",
-				type: item.type,
-				author: item.author,
-				body: item.body,
-				url: item.url,
-				pr: current.pr.number,
-			});
+			sendAlert(
+				`New PR comment on #${current.pr.number} from ${item.author}: ${truncateBody(item.body) || "(no body)"}\n\nIf you address this feedback, reply to the PR comment and resolve the thread/comment if appropriate.`,
+				{
+					kind: "comment",
+					type: item.type,
+					author: item.author,
+					body: item.body,
+					url: item.url,
+					pr: current.pr.number,
+				},
+			);
 		}
 	}
 
