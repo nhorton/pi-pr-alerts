@@ -87,6 +87,19 @@ function getBranch(cwd: string): string | undefined {
 	}
 }
 
+function isInsideGitRepo(cwd: string): boolean {
+	try {
+		return execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
+			cwd,
+			encoding: "utf-8",
+			timeout: 3000,
+			stdio: ["pipe", "pipe", "pipe"],
+		}).trim() === "true";
+	} catch {
+		return false;
+	}
+}
+
 function getUncommittedChangeCount(cwd: string): number {
 	try {
 		const status = execFileSync("git", ["status", "--porcelain"], {
@@ -297,6 +310,14 @@ function getLatestRuns(repo: RepoInfo, branch: string, cwd?: string): RunInfo[] 
 	}
 }
 
+export function formatUncommittedChanges(uncommittedChanges: number): string {
+	return `✍️ ${uncommittedChanges} uncommitted ${uncommittedChanges === 1 ? "change" : "changes"}`;
+}
+
+export function formatLocalOnlyStatus(isRepo: boolean, uncommittedChanges: number): string | undefined {
+	return isRepo && uncommittedChanges > 0 ? formatUncommittedChanges(uncommittedChanges) : undefined;
+}
+
 function formatStatus(pr: PrInfo, uncommittedChanges = 0): string {
 	const stateIcon = pr.state === "MERGED" ? "🟣" : pr.state === "CLOSED" ? "🔴" : "🟢";
 	const prLabel = `${pr.repoName} PR - ${pr.title}`;
@@ -321,7 +342,7 @@ function formatStatus(pr: PrInfo, uncommittedChanges = 0): string {
 	}
 
 	if (uncommittedChanges > 0) {
-		parts.push(`✍️ ${uncommittedChanges} uncommitted ${uncommittedChanges === 1 ? "change" : "changes"}`);
+		parts.push(formatUncommittedChanges(uncommittedChanges));
 	}
 
 	return parts.join(" · ");
@@ -403,7 +424,9 @@ export default function (pi: ExtensionAPI) {
 	function showStatus(pr: PrInfo | undefined, ui: { setStatus: (key: string, value: string | undefined) => void }, cwd?: string) {
 		const previous = lastPr;
 		lastPr = pr ?? undefined;
-		ui.setStatus(STATUS_KEY, lastPr ? formatStatus(lastPr, cwd ? getUncommittedChangeCount(cwd) : 0) : undefined);
+		const uncommittedChanges = cwd ? getUncommittedChangeCount(cwd) : 0;
+		const localStatus = formatLocalOnlyStatus(cwd ? isInsideGitRepo(cwd) : false, uncommittedChanges);
+		ui.setStatus(STATUS_KEY, lastPr ? formatStatus(lastPr, uncommittedChanges) : localStatus);
 		maybeAlertForFailedChecks(previous, lastPr);
 		maybeAlertForMerge(previous, lastPr);
 		maybeAlertForMergeConflict(previous, lastPr);

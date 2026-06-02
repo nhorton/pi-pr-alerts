@@ -38,7 +38,8 @@
     ]
   },
   "scripts": {
-    "check": "tsc --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 --types node extensions/pr-status.ts",
+    "check": "tsc --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 --types node extensions/pr-status.ts tests/status-format.test.ts",
+    "test": "rm -rf .tmp-test && tsc --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 --types node --outDir .tmp-test extensions/pr-status.ts tests/status-format.test.ts && node --test .tmp-test/tests/status-format.test.js",
     "pack:dry": "npm pack --dry-run"
   }
 }
