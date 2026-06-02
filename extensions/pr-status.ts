@@ -38,18 +38,19 @@ interface RepoInfo {
 	name: string;
 }
 
-interface CommentSnapshot {
+export interface CommentSnapshot {
 	updatedAt?: string;
 	items: PrComment[];
 }
 
-interface PrComment {
+export interface PrComment {
 	id: string;
 	author: string;
 	body: string;
 	url: string;
 	createdAt: string;
 	type: "issue-comment" | "review-comment" | "review";
+	threadResolved?: boolean;
 }
 
 interface RunInfo {
@@ -242,7 +243,7 @@ function getPrForBranch(cwd: string, repo?: RepoInfo): PrInfo | undefined {
 }
 
 function getPrCommentSnapshot(repo: RepoInfo, prNumber: number, cwd?: string): CommentSnapshot | undefined {
-	const query = `query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ updatedAt comments(last:25){nodes{id author{login} body url createdAt}} reviews(last:25){nodes{id author{login} body url createdAt}} reviewThreads(last:25){nodes{comments(last:25){nodes{id author{login} body url createdAt}}}} } } }`;
+	const query = `query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ updatedAt comments(last:25){nodes{id author{login} body url createdAt}} reviews(last:25){nodes{id author{login} body url createdAt}} reviewThreads(last:25){nodes{isResolved comments(last:25){nodes{id author{login} body url createdAt}}}} } } }`;
 	const gql = runGh([
 		"api",
 		"graphql",
@@ -268,7 +269,7 @@ function getPrCommentSnapshot(repo: RepoInfo, prNumber: number, cwd?: string): C
 		}
 		for (const thread of pr.reviewThreads?.nodes ?? []) {
 			for (const node of thread.comments?.nodes ?? []) {
-				items.push(normalizeComment(node, "review-comment"));
+				items.push(normalizeComment(node, "review-comment", { threadResolved: Boolean(thread.isResolved) }));
 			}
 		}
 		return { updatedAt: pr.updatedAt, items };
@@ -277,7 +278,7 @@ function getPrCommentSnapshot(repo: RepoInfo, prNumber: number, cwd?: string): C
 	}
 }
 
-function normalizeComment(node: any, type: PrComment["type"]): PrComment {
+function normalizeComment(node: any, type: PrComment["type"], extra: Partial<PrComment> = {}): PrComment {
 	return {
 		id: `${type}:${node.id}`,
 		author: node.author?.login ?? "unknown",
@@ -285,7 +286,19 @@ function normalizeComment(node: any, type: PrComment["type"]): PrComment {
 		url: node.url ?? "",
 		createdAt: node.createdAt ?? "",
 		type,
+		...extra,
 	};
+}
+
+export function isCommentAlertable(item: PrComment): boolean {
+	return item.type !== "review-comment" || item.threadResolved === false;
+}
+
+export function collectNewCommentAlerts(snapshot: CommentSnapshot, seenCommentIds: Set<string>, initialCommentBaseline: boolean): PrComment[] {
+	const incoming = snapshot.items.filter((item) => !seenCommentIds.has(item.id) && isCommentAlertable(item));
+	for (const item of snapshot.items) seenCommentIds.add(item.id);
+	if (initialCommentBaseline) return [];
+	return incoming.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 function getLatestRuns(repo: RepoInfo, branch: string, cwd?: string): RunInfo[] {
@@ -548,13 +561,12 @@ export default function (pi: ExtensionAPI) {
 		if (snapshot.updatedAt && snapshot.updatedAt === lastPrUpdatedAt) return;
 		lastPrUpdatedAt = snapshot.updatedAt;
 
-		const incoming = snapshot.items.filter((item) => !seenCommentIds.has(item.id));
-		for (const item of snapshot.items) seenCommentIds.add(item.id);
+		const incoming = collectNewCommentAlerts(snapshot, seenCommentIds, initialCommentBaseline);
 		if (initialCommentBaseline) {
 			initialCommentBaseline = false;
 			return;
 		}
-		for (const item of incoming.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+		for (const item of incoming) {
 			sendAlert(
 				`New PR comment on #${current.pr.number} from ${item.author}: ${truncateBody(item.body) || "(no body)"}\n\nIf you address this feedback, reply to the PR comment and resolve the thread/comment if appropriate.`,
 				{
