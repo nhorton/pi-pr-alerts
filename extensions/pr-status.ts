@@ -378,7 +378,9 @@ export default function (pi: ExtensionAPI) {
 	let lastPr: PrInfo | undefined;
 	let cachedRepo: RepoInfo | undefined;
 	let pinnedPr: { repo: string; number: number } | null = null;
-	let latestCtx: ExtensionContext | null = null;
+	let latestCwd: string | undefined;
+	let latestUi: ExtensionContext["ui"] | undefined;
+	let sessionGeneration = 0;
 	let seenCommentIds = new Set<string>();
 	let lastPrUpdatedAt: string | undefined;
 	let initialCommentBaseline = true;
@@ -410,6 +412,18 @@ export default function (pi: ExtensionAPI) {
 			},
 			{ triggerTurn: true, deliverAs: "steer" },
 		);
+	}
+
+	function setLatestContext(ctx: ExtensionContext) {
+		// Do not retain the full ExtensionContext across async callbacks. Pi marks
+		// old contexts stale after reload/session replacement; accessing ctx.cwd later
+		// can throw. Snapshot only the plain cwd plus the UI handle used by updates.
+		latestCwd = ctx.cwd;
+		latestUi = ctx.ui;
+	}
+
+	function updateLatest() {
+		if (latestCwd && latestUi) update(latestCwd, latestUi);
 	}
 
 	function resetAlertState() {
@@ -506,7 +520,11 @@ export default function (pi: ExtensionAPI) {
 				stdio: ["ignore", "ignore", "ignore"],
 			});
 			runWatchers.set(run.databaseId, child);
+			const watcherGeneration = sessionGeneration;
 			child.on("exit", (code) => {
+				// Ignore callbacks from watchers killed/replaced during branch changes,
+				// reloads, or shutdowns. They can otherwise report false failures.
+				if (runWatchers.get(run.databaseId) !== child) return;
 				runWatchers.delete(run.databaseId);
 				if (code && code !== 0) {
 					sendAlert(`GitHub Actions run failed for PR #${lastPr?.number ?? "?"}: ${run.workflowName ?? run.displayTitle ?? run.databaseId}.`, {
@@ -515,7 +533,7 @@ export default function (pi: ExtensionAPI) {
 						runId: run.databaseId,
 					});
 				}
-				if (latestCtx) update(latestCtx.cwd, latestCtx.ui);
+				if (watcherGeneration === sessionGeneration) updateLatest();
 			});
 		}
 	}
@@ -587,7 +605,7 @@ export default function (pi: ExtensionAPI) {
 		if (pinnedPr?.repo === parsed.repo && pinnedPr?.number === parsed.number) return;
 		if (lastPr && lastPr.state === "OPEN") return;
 		pinnedPr = { repo: parsed.repo, number: parsed.number };
-		latestCtx = ctx;
+		setLatestContext(ctx);
 		resetAlertState();
 		showStatus(getPrByNumber(parsed.repo, parsed.number), ctx.ui, ctx.cwd);
 		checkComments();
@@ -595,25 +613,30 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" as const };
-		latestCtx = ctx;
+		setLatestContext(ctx);
 		tryPinFromUrl(event.text, ctx);
 		return { action: "continue" as const };
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		latestCtx = ctx;
+		setLatestContext(ctx);
 		tryPinFromUrl(event.prompt, ctx);
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		latestCtx = ctx;
+		if (statusTimer) clearInterval(statusTimer);
+		if (commentTimer) clearInterval(commentTimer);
+		statusTimer = undefined;
+		commentTimer = undefined;
+		sessionGeneration += 1;
+		setLatestContext(ctx);
 		update(ctx.cwd, ctx.ui);
 		checkComments(ctx.cwd);
 		statusTimer = setInterval(() => {
-			if (latestCtx) update(latestCtx.cwd, latestCtx.ui);
+			updateLatest();
 		}, POLL_INTERVAL);
 		commentTimer = setInterval(() => {
-			if (latestCtx) checkComments(latestCtx.cwd);
+			if (latestCwd) checkComments(latestCwd);
 		}, COMMENT_PROBE_INTERVAL);
 	});
 
@@ -622,6 +645,9 @@ export default function (pi: ExtensionAPI) {
 		if (commentTimer) clearInterval(commentTimer);
 		statusTimer = undefined;
 		commentTimer = undefined;
+		latestCwd = undefined;
+		latestUi = undefined;
+		sessionGeneration += 1;
 		resetAlertState();
 	});
 }
