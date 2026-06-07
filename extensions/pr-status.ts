@@ -374,6 +374,7 @@ const MESSAGE_TYPE = "pr-alert";
 export default function (pi: ExtensionAPI) {
 	let statusTimer: ReturnType<typeof setInterval> | undefined;
 	let commentTimer: ReturnType<typeof setInterval> | undefined;
+	let lastCwd: string | undefined;
 	let lastBranch: string | undefined;
 	let lastPr: PrInfo | undefined;
 	let cachedRepo: RepoInfo | undefined;
@@ -540,8 +541,10 @@ export default function (pi: ExtensionAPI) {
 
 	function update(cwd: string, ui: { setStatus: (key: string, value: string | undefined) => void }) {
 		const branch = getBranch(cwd);
-		if (branch !== lastBranch) {
+		if (cwd !== lastCwd || branch !== lastBranch) {
+			lastCwd = cwd;
 			lastBranch = branch;
+			cachedRepo = undefined;
 			lastPr = undefined;
 			resetAlertState();
 		}
@@ -549,15 +552,10 @@ export default function (pi: ExtensionAPI) {
 		if (branch && branch !== "HEAD") {
 			if (!cachedRepo) cachedRepo = getRepoInfo(cwd);
 			const pr = getPrForBranch(cwd, cachedRepo);
-			if (pr?.state === "OPEN") {
+			if (pr) {
 				pinnedPr = null;
 				showStatus(pr, ui, cwd);
-				maybeStartRunWatchers(cwd);
-				return;
-			}
-			if (pr?.state === "MERGED") {
-				pinnedPr = null;
-				showStatus(pr, ui, cwd);
+				if (pr.state === "OPEN") maybeStartRunWatchers(cwd);
 				return;
 			}
 		}
